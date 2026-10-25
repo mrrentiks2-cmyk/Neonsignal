@@ -1,0 +1,71 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack project archive (if the repo contains only a zip)
+        run: |
+          if [ ! -f settings.gradle ]; then
+            Z=$(ls NeonSignal*.zip 2>/dev/null | head -n1); [ -z "$Z" ] && Z=$(ls *.zip 2>/dev/null | head -n1)
+            if [ -z "$Z" ]; then echo "В корне репозитория нет ни проекта, ни zip-архива"; exit 1; fi
+            unzip -DD -o -q "$Z" -d _unz
+            S=$(find _unz -maxdepth 3 -name settings.gradle | head -n1)
+            if [ -z "$S" ]; then echo "В архиве не найден settings.gradle"; exit 1; fi
+            cp -a "$(dirname "$S")"/. .
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build APK
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+
+      - name: Show build error
+        if: failure()
+        run: |
+          {
+            echo "### Ошибка сборки — скопируйте этот текст"
+            echo '~~~'
+            grep -i -E "error:|What went wrong|FAILED|cannot find symbol|Could not|not found" build.log | grep -v "^\s*at " | head -40 || true
+            echo "-----"
+            awk '/What went wrong/{f=1} f{print; n++} n>30{exit}' build.log || true
+            echo '~~~'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-log
+          path: build.log
+
+      - name: Collect APK
+        run: cp app/build/outputs/apk/release/app-release.apk NeonSignal.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeonSignal-apk
+          path: NeonSignal.apk
+
+      - name: Publish APK to Releases (direct download)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: signal-build-${{ github.run_number }}
+          name: Neon Signal — сборка ${{ github.run_number }}
+          body: Скачайте NeonSignal.apk ниже и установите на телефон. Новые сборки ставятся поверх старой.
+          files: NeonSignal.apk
+          make_latest: true
